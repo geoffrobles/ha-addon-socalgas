@@ -9,15 +9,24 @@ from playwright_stealth import Stealth
 
 load_dotenv()
 
-SOCALGAS_EMAIL = os.getenv("SOCALGAS_EMAIL")
-SOCALGAS_PASSWORD = os.getenv("SOCALGAS_PASSWORD")
+# Home Assistant add-on config
+with open("/data/options.json") as f:
+    config = json.load(f)
 
-MQTT_HOST = os.getenv("MQTT_HOST")
-MQTT_PORT = int(os.getenv("MQTT_PORT") or 1883)
+print(json.dumps(config, indent=2))
 
-MQTT_USER = os.getenv("MQTT_USER")
-MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
+SOCALGAS_EMAIL = config["email"]
+SOCALGAS_PASSWORD = config["password"]
+
+MQTT_HOST = config["mqtt_host"]
+MQTT_PORT = int(config.get("mqtt_port", 1883))
+MQTT_USER = config.get("mqtt_user", "")
+MQTT_PASSWORD = config.get("mqtt_password", "")
+
 MQTT_TOPIC = "home/socalgas/total"
+
+print(f"MQTT_HOST={MQTT_HOST}")
+print(f"EMAIL={SOCALGAS_EMAIL}")
 
 LOGIN_URL = "https://myaccount.socalgas.com/ui/login"
 

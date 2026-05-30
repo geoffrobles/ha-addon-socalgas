@@ -1,4 +1,4 @@
-#!/usr/bin/with-contenv bashio
+#!/bin/bash
 
 export SOCALGAS_EMAIL=$(bashio::config 'email')
 export SOCALGAS_PASSWORD=$(bashio::config 'password')

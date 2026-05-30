@@ -13,8 +13,8 @@ RUN pip install \
 
 RUN playwright install chromium
 
-COPY app /app
-COPY socalgas/run.sh /run.sh
+COPY socalgas_api_slim.py /app/
+COPY run.sh /run.sh
 
 RUN chmod +x /run.sh
 

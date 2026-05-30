@@ -13,7 +13,7 @@ load_dotenv()
 with open("/data/options.json") as f:
     config = json.load(f)
 
-print(json.dumps(config, indent=2))
+#print(json.dumps(config, indent=2))
 
 SOCALGAS_EMAIL = config["email"]
 SOCALGAS_PASSWORD = config["password"]
@@ -30,157 +30,43 @@ print(f"EMAIL={SOCALGAS_EMAIL}")
 
 LOGIN_URL = "https://myaccount.socalgas.com/ui/login"
 
-DEBUG = False
+DEBUG = config.get("debug", False)
 
+        debug_log("Clicking login button")
 
-def login_and_get_usage():
-
-    with sync_playwright() as p:
-
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-setuid-sandbox",                
-                "--disable-blink-features=AutomationControlled"
-            ]
-        )
-
-        page = browser.new_page(
-            viewport={
-                "width": 1280,
-                "height": 900
-            }
-        )
-
-        page.set_extra_http_headers({
-            "User-Agent": (
-                "Mozilla/5.0 "
-                "(X11; Linux x86_64) "
-                "AppleWebKit/537.36 "
-                "(KHTML, like Gecko) "
-                "Chrome/148.0.0.0 "
-                "Safari/537.36"
-            )
-        })
-
-#        Stealth().apply_stealth_sync(page)
-
-        login_verified = False
-        usage_widget_data = None
-
-        def handle_request(request):
-            nonlocal login_verified
-            headers = request.headers
-            for key, value in headers.items():
-                if key.lower() == "accesstoken":
-                    login_verified = True
-
-                    if DEBUG:
-                        print(
-                            f"Captured AccessToken: "
-                            f"{value[:25]}..."
-                        )
-
-        def handle_response(response):
-            nonlocal usage_widget_data
-            url = response.url.lower()
-            if response.status != 200:
-                return
-
-            # Only inspect likely usage endpoints
-            if (
-                "usage" not in url
-                and "billing" not in url
-                and "daily" not in url
-            ):
-                return
-            if DEBUG:
-                print(f"\n=== RESPONSE ===")
-                print(response.url)
-            try:
-                data = response.json()
-                if isinstance(data, dict):
-                    # Current billing summary endpoint
-                    if (
-                        isinstance(data, dict)
-                        and "UsageSoFar" in data
-                    ):
-                        usage_widget_data = data
-                        print(
-                            "\nCaptured valid "
-                            "billing data"
-                        )
-
-                    # Optional debugging
-                    if DEBUG:
-                        print(
-                            f"Keys: {list(data.keys())}"
-                        )
-
-                        print(
-                            json.dumps(
-                                data,
-                                indent=2
-                            )[:1500]
-                        )
-
-            except Exception:
-                if DEBUG:
-                    print("(non-json response)")
-
-        page.on("request", handle_request)
-        page.on("response", handle_response)
-        page.goto(LOGIN_URL)
-        page.wait_for_selector(
-            "scg-text-field"
-        )
-        email_input = (
-            page.locator("scg-text-field")
-            .nth(0)
-            .locator("input")
-        )
-
-        email_input.click()
-
-        email_input.type(
-            SOCALGAS_EMAIL,
-            delay=100
-        )
-
-        page.wait_for_timeout(1000)
-
-        password_input = (
-            page.locator("scg-text-field")
-            .nth(1)
-            .locator("input")
-        )
-
-        password_input.click()
-
-        password_input.type(
-            SOCALGAS_PASSWORD,
-            delay=100
-        )
-
-        page.wait_for_timeout(1000)
-#        page.screenshot(path="/tmp/before_login.png")
         page.locator(
             'scg-button[data-testid="login-button"]'
         ).click()
+        page.wait_for_timeout(5000)
+        debug_log(
+            f"URL after login click: {page.url}"
+        )
+
+
+        debug_log("Login button clicked")
 
         print(
             "Waiting for usage widget response..."
         )
 
-        for _ in range(60):
+        for i in range(60):
 
             if (
                 login_verified
                 and usage_widget_data
             ):
+                debug_log(
+                    "Login verified and usage data captured"
+                )
                 break
+
+            if DEBUG and i % 5 == 0:
+                debug_log(
+                    f"Waiting... "
+                    f"login_verified={login_verified} "
+                    f"usage_widget={usage_widget_data is not None} "
+                    f"url={page.url}"
+                )
 
             page.wait_for_timeout(1000)
 
@@ -188,23 +74,31 @@ def login_and_get_usage():
 
         if not login_verified:
 
-            page.screenshot(
-                path="login_failure.png"
+            debug_log(
+                "Login verification failed"
             )
 
+            debug_page_dump(page)
+
             raise Exception(
-                "Login could not be verified"
+                f"Login could not be verified. "
+                f"URL={page.url}"
             )
 
         if not usage_widget_data:
 
-            page.screenshot(
-                path="usage_widget_failure.png"
+            debug_log(
+                "Usage widget data not captured"
             )
 
+            debug_page_dump(page)
+
             raise Exception(
-                "Could not capture usage widget data"
+                f"Could not capture usage widget data. "
+                f"URL={page.url}"
             )
+
+        browser.close()
 
         return usage_widget_data
 
@@ -268,6 +162,25 @@ def publish_mqtt(payload):
     )
     client.disconnect()
     
+def debug_log(msg):
+    if DEBUG:
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] "
+            f"{msg}"
+        )
+
+def debug_page_dump(page):
+    if not DEBUG:
+        return
+
+    try:
+        print("\n===== PAGE TEXT =====")
+        print(page.locator("body").inner_text())
+        print("=====================\n")
+    except Exception as e:
+        print(f"Could not read page text: {e}")
+
+
 def main():
 
     if not MQTT_HOST:

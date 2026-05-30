@@ -1,5 +1,5 @@
 name: SoCalGas Usage Importer
-version: "1.0.7"
+version: "1.0.8"
 slug: socalgas_usage
 description: Import SoCalGas usage into Home Assistant
 startup: services
@@ -16,6 +16,7 @@ options:
   mqtt_port: 1883
   mqtt_user: ""
   mqtt_password: ""
+  debug: false
 
 schema:
   email: str
@@ -24,4 +25,5 @@ schema:
   mqtt_port: int
   mqtt_user: str?
   mqtt_password: password?
+  debug: bool
 

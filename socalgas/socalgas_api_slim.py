@@ -13,7 +13,8 @@ SOCALGAS_EMAIL = os.getenv("SOCALGAS_EMAIL")
 SOCALGAS_PASSWORD = os.getenv("SOCALGAS_PASSWORD")
 
 MQTT_HOST = os.getenv("MQTT_HOST")
-MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
+MQTT_PORT = int(os.getenv("MQTT_PORT") or 1883)
+
 MQTT_USER = os.getenv("MQTT_USER")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
 MQTT_TOPIC = "home/socalgas/total"

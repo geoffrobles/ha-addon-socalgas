@@ -17,9 +17,10 @@ try:
 except FileNotFoundError:
     print("Using local test config")
 
+    with open("options.json") as f:
+        config = json.load(f)
 
 
-debug_config()
 
 SOCALGAS_EMAIL = config["email"]
 SOCALGAS_PASSWORD = config["password"]
@@ -283,6 +284,8 @@ def debug_config():
     print("==============\n")
 
 def main():
+
+    debug_config()
 
     if not MQTT_HOST:
         raise Exception(

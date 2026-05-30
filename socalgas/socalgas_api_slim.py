@@ -42,6 +42,7 @@ def login_and_get_usage():
             args=[
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
+                "--disable-setuid-sandbox",                
                 "--disable-blink-features=AutomationControlled"
             ]
         )

@@ -31,6 +31,7 @@ print(f"EMAIL={SOCALGAS_EMAIL}")
 LOGIN_URL = "https://myaccount.socalgas.com/ui/login"
 
 DEBUG = config.get("debug", False)
+def login_and_get_usage():  
 
         debug_log("Clicking login button")
 
@@ -79,6 +80,15 @@ DEBUG = config.get("debug", False)
             )
 
             debug_page_dump(page)
+
+            if DEBUG:
+                try:
+                    print("\n===== PAGE TEXT =====")
+                    print(page.locator("body").inner_text())
+                    print("=====================\n")
+                except Exception as e:
+                    print(f"Could not dump page: {e}")
+
 
             raise Exception(
                 f"Login could not be verified. "

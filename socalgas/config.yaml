@@ -1,5 +1,5 @@
 name: SoCalGas Usage Importer
-version: "1.0.8"
+version: "1.0.9"
 slug: socalgas_usage
 description: Import SoCalGas usage into Home Assistant
 startup: services

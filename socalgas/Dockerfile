@@ -1,17 +1,10 @@
-FROM ghcr.io/home-assistant/amd64-base:latest
-
-RUN apk add --no-cache \
-    python3 \
-    py3-pip
+FROM mcr.microsoft.com/playwright/python:v1.60.0-noble
 
 RUN pip install \
-    playwright \
     playwright-stealth \
     paho-mqtt \
     requests \
     python-dotenv
-
-RUN playwright install chromium
 
 COPY socalgas_api_slim.py /app/
 COPY run.sh /run.sh

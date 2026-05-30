@@ -30,6 +30,7 @@ def login_and_get_usage():
         browser = p.chromium.launch(
             headless=True,
             args=[
+                "--no-sandbox",
                 "--disable-blink-features=AutomationControlled"
             ]
         )

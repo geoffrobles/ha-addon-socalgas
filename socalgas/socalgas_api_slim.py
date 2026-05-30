@@ -41,6 +41,7 @@ def login_and_get_usage():
             headless=True,
             args=[
                 "--no-sandbox",
+                "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled"
             ]
         )
@@ -63,7 +64,7 @@ def login_and_get_usage():
             )
         })
 
-        Stealth().apply_stealth_sync(page)
+#        Stealth().apply_stealth_sync(page)
 
         login_verified = False
         usage_widget_data = None
@@ -163,7 +164,7 @@ def login_and_get_usage():
         )
 
         page.wait_for_timeout(1000)
-
+#        page.screenshot(path="/tmp/before_login.png")
         page.locator(
             'scg-button[data-testid="login-button"]'
         ).click()

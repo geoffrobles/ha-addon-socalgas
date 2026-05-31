@@ -132,8 +132,18 @@ def build_payload(usage_data):
     cost_data = user_detail.get("CostToDate", {}) if isinstance(user_detail, dict) else {}
 
     return {
-        "usage_so_far_ccf": float(usage_data.get("UsageSoFar", 0)),
-        "projected_total_ccf": float(cost_data.get("ProjThermsQty", 0)),
+        "therms_to_date": float(
+            cost_data.get("ProjThermsToDateQty") or 0
+        ),
+        "projected_therms": float(
+            cost_data.get("ProjThermsQty") or 0
+        ),
+        "projected_bill": float(
+            cost_data.get("ProjBillAmt") or 0
+        ),
+        "cost_to_date": float(
+            cost_data.get("ProjCostToDateAmt") or 0
+        ),
         "billing_cycle_start": cost_data.get("ProjStartDate"),
         "billing_cycle_end": cost_data.get("ProjEndDate"),
         "updated_at": datetime.now().isoformat()

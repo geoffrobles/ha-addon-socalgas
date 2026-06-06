@@ -132,18 +132,10 @@ def build_payload(usage_data):
     cost_data = user_detail.get("CostToDate", {}) if isinstance(user_detail, dict) else {}
 
     return {
-        "therms_to_date": float(
-            cost_data.get("ProjThermsToDateQty") or 0
-        ),
-        "projected_therms": float(
-            cost_data.get("ProjThermsQty") or 0
-        ),
-        "projected_bill": float(
-            cost_data.get("ProjBillAmt") or 0
-        ),
-        "cost_to_date": float(
-            cost_data.get("ProjCostToDateAmt") or 0
-        ),
+        "therms_to_date": float(  cost_data.get("ProjThermsToDateQty") or 0),
+        "projected_therms": float(cost_data.get("ProjThermsQty") or 0),
+        "projected_bill": float(  cost_data.get("ProjBillAmt") or 0),
+        "cost_to_date": float(    cost_data.get("ProjCostToDateAmt") or 0 ),
         "billing_cycle_start": cost_data.get("ProjStartDate"),
         "billing_cycle_end": cost_data.get("ProjEndDate"),
         "updated_at": datetime.now().isoformat()

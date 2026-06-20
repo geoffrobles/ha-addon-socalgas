@@ -114,7 +114,7 @@ def login_and_get_usage():
         password_field = page.locator("scg-text-field input").nth(1)
         password_field.fill(SOCALGAS_PASSWORD)
         
-        page.wait_for_timeout(500) # Natural human pause
+        page.wait_for_timeout(500) # Give custom web components a moment to settle.
         
         print("Submitting login credentials...")
         page.locator('scg-button[data-testid="login-button"]').click()
@@ -122,15 +122,12 @@ def login_and_get_usage():
         # Wait loop with timeout boundary
         print("Waiting for usage widget response...")
         for _ in range(30):  # 30 seconds total max
-            if state["login_verified"] and state["usage_widget_data"]:
+            if state["usage_widget_data"]:
                 break
             page.wait_for_timeout(1000)
 
-        # Cleanup browser resources immediately before making logical assessments
         browser.close()
 
-        if not state["login_verified"]:
-            raise RuntimeError("Login verification token missed or failed.")
         if not state["usage_widget_data"]:
             raise RuntimeError("Could not capture backend usage widget data.")
 

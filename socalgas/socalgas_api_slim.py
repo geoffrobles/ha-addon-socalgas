@@ -35,6 +35,22 @@ LOGIN_URL = "https://myaccount.socalgas.com/ui/login"
 DEBUG = config.get("debug", False)
 
 
+def is_usage_payload(data):
+    try:
+        cost_data = data["VerificationResponse"]["UserDetail"]["CostToDate"]
+        return all(
+            field in cost_data
+            for field in [
+                "ProjThermsToDateQty",
+                "ProjThermsQty",
+                "ProjBillAmt",
+                "ProjCostToDateAmt",
+            ]
+        )
+    except (KeyError, TypeError):
+        return False
+
+
 def login_and_get_usage():
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -65,34 +81,30 @@ def login_and_get_usage():
             if "accesstoken" in [k.lower() for k in request.headers.keys()]:
                 state["login_verified"] = True
                 if DEBUG:
-                    token = request.headers.get("accesstoken", "") or request.headers.get("AccessToken", "")
-                    print(f"Captured AccessToken: {token[:25]}...")
+                    print("Captured AccessToken header")
 
         def handle_response(response):
-            url = response.url.lower()
             if response.status != 200:
-                return
-
-            if not any(k in url for k in ["usage", "billing", "daily"]):
                 return
 
             try:
                 data = response.json()
-                if isinstance(data, dict) and "UsageSoFar" in data:
-                    state["usage_widget_data"] = data
-                    print("\nCaptured valid billing data")
-                    
-                    if DEBUG:
-                        print(f"\n=== RESPONSE MATCH ===\n{response.url}")
-                        print(json.dumps(data, indent=2)[:1000])
             except Exception:
-                pass  # Ignore non-JSON responses quietly
+                return  # not JSON, ignore quietly
+
+            if isinstance(data, dict) and is_usage_payload(data):
+                state["usage_widget_data"] = data
+                print("\nCaptured valid billing data")
+
+                if DEBUG:
+                    print(f"\n=== RESPONSE MATCH ===\n{response.url}")
+                    print(json.dumps(data, indent=2)[:1000])
 
         page.on("request", handle_request)
         page.on("response", handle_response)
         
         print("Navigating to login page...")
-        page.goto(LOGIN_URL, wait_until="domcontentloaded")  # faster, honest about what you need
+        page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)  
         
         # Fill credentials safely using modern locators
         email_field = page.locator("scg-text-field input").nth(0)
@@ -125,51 +137,71 @@ def login_and_get_usage():
         return state["usage_widget_data"]
 
 
+def to_float(value, field_name):
+    try:
+        return float(value)
+    except (TypeError, ValueError) as e:
+        raise RuntimeError(f"Expected numeric value for {field_name}, got {value!r}") from e
+
+
+
 def build_payload(usage_data):
     # Safely walk through nested fields to prevent crashing on unforeseen schema shifts
     verification = usage_data.get("VerificationResponse", {})
     user_detail = verification.get("UserDetail", {}) if isinstance(verification, dict) else {}
     cost_data = user_detail.get("CostToDate", {}) if isinstance(user_detail, dict) else {}
-
-# Add this
-    required_fields = ["ProjThermsToDateQty", "ProjThermsQty", "ProjBillAmt", "ProjCostToDateAmt"]
+    required_fields = [
+        "ProjThermsToDateQty", 
+        "ProjThermsQty", 
+        "ProjBillAmt", 
+        "ProjCostToDateAmt",
+        "ProjStartDate",
+        "ProjEndDate",
+        ]
     missing = [f for f in required_fields if f not in cost_data]
     if missing:
         raise RuntimeError(f"Schema drift detected — missing fields: {missing}")
 
-
-
-
     return {
-        "therms_to_date": float(  cost_data.get("ProjThermsToDateQty") or 0),
-        "projected_therms": float(cost_data.get("ProjThermsQty") or 0),
-        "projected_bill": float(  cost_data.get("ProjBillAmt") or 0),
-        "cost_to_date": float(    cost_data.get("ProjCostToDateAmt") or 0 ),
-        "billing_cycle_start": cost_data.get("ProjStartDate"),
-        "billing_cycle_end": cost_data.get("ProjEndDate"),
-        "updated_at": datetime.now().isoformat()
+        "therms_to_date": to_float(cost_data["ProjThermsToDateQty"], "ProjThermsToDateQty"),
+        "projected_therms": to_float(cost_data["ProjThermsQty"], "ProjThermsQty"),
+        "projected_bill": to_float(cost_data["ProjBillAmt"], "ProjBillAmt"),
+        "cost_to_date": to_float(cost_data["ProjCostToDateAmt"], "ProjCostToDateAmt"),
+        "billing_cycle_start": cost_data["ProjStartDate"],
+        "billing_cycle_end": cost_data["ProjEndDate"],
+        "updated_at": datetime.now().astimezone().isoformat(),
     }
-
 
 def publish_mqtt(payload):
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-    
+
     if MQTT_USER:
         client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
-        
-    client.connect(MQTT_HOST, MQTT_PORT, 60)
-    
-    # Start loop thread to process delivery buffers smoothly
-    client.loop_start()
-    
-    msg_info = client.publish(MQTT_TOPIC, json.dumps(payload), retain=True)
-    msg_info.wait_for_publish()  # Blocks until packet handshaking finishes safely
-    
-    print(f"Published MQTT message successfully to topic: {MQTT_TOPIC}")
-    
-    client.loop_stop()
-    client.disconnect()
 
+    try:
+        result = client.connect(MQTT_HOST, MQTT_PORT, 60)
+        if result != mqtt.MQTT_ERR_SUCCESS:
+            raise RuntimeError(f"MQTT connection failed with code {result}")
+
+        client.loop_start()
+
+        msg_info = client.publish(
+            MQTT_TOPIC,
+            json.dumps(payload),
+            qos=1,
+            retain=True,
+        )
+
+        msg_info.wait_for_publish(timeout=10)
+
+        if not msg_info.is_published():
+            raise TimeoutError("MQTT publish timed out.")
+
+        print(f"Published MQTT message successfully to topic: {MQTT_TOPIC}")
+
+    finally:
+        client.loop_stop()
+        client.disconnect()
 
 def debug_config():
     if not DEBUG:

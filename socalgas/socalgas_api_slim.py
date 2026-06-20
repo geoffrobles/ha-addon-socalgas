@@ -106,7 +106,7 @@ def login_and_get_usage():
         print("Navigating to login page...")
         page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)  
         
-        # Fill credentials safely using modern locators
+        # Fill credentials safely using locators
         email_field = page.locator("scg-text-field input").nth(0)
         email_field.wait_for(state="visible")
         email_field.fill(SOCALGAS_EMAIL)

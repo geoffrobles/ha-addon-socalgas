@@ -92,7 +92,7 @@ def login_and_get_usage():
         page.on("response", handle_response)
         
         print("Navigating to login page...")
-        page.goto(LOGIN_URL, wait_until="networkidle")
+        page.goto(LOGIN_URL, wait_until="domcontentloaded")  # faster, honest about what you need
         
         # Fill credentials safely using modern locators
         email_field = page.locator("scg-text-field input").nth(0)
@@ -130,6 +130,15 @@ def build_payload(usage_data):
     verification = usage_data.get("VerificationResponse", {})
     user_detail = verification.get("UserDetail", {}) if isinstance(verification, dict) else {}
     cost_data = user_detail.get("CostToDate", {}) if isinstance(user_detail, dict) else {}
+
+# Add this
+    required_fields = ["ProjThermsToDateQty", "ProjThermsQty", "ProjBillAmt", "ProjCostToDateAmt"]
+    missing = [f for f in required_fields if f not in cost_data]
+    if missing:
+        raise RuntimeError(f"Schema drift detected — missing fields: {missing}")
+
+
+
 
     return {
         "therms_to_date": float(  cost_data.get("ProjThermsToDateQty") or 0),

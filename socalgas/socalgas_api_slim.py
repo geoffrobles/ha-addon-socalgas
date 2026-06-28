@@ -53,7 +53,7 @@ def is_usage_payload(data):
 
 def login_and_get_usage():
     with sync_playwright() as p:
-        browser = p.chromium.launch(
+        with p.chromium.launch(
             headless=True,
             args=[
                 "--no-sandbox",
@@ -61,77 +61,92 @@ def login_and_get_usage():
                 "--disable-setuid-sandbox",
                 "--disable-blink-features=AutomationControlled"
             ]
-        )
-        
-        # Using a typical desktop user agent
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 900},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        )
-        
-        page = context.new_page()
-        Stealth().apply_stealth_sync(page)
+        ) as browser:
+            context = browser.new_context(
+                viewport={"width": 1280, "height": 900},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
 
-        state = {
-            "login_verified": False,
-            "usage_widget_data": None
-        }
+            page = context.new_page()
+            Stealth().apply_stealth_sync(page)
 
-        def handle_request(request):
-            if "accesstoken" in [k.lower() for k in request.headers.keys()]:
-                state["login_verified"] = True
-                if DEBUG:
-                    print("Captured AccessToken header")
+            state = {
+                "login_verified": False,
+                "login_failed": False,
+                "usage_widget_data": None
+            }
 
-        def handle_response(response):
-            if response.status != 200:
-                return
+            def handle_request(request):
+                if "accesstoken" in [k.lower() for k in request.headers.keys()]:
+                    state["login_verified"] = True
+                    if DEBUG:
+                        print("Captured AccessToken header")
 
-            try:
-                data = response.json()
-            except Exception:
-                return  # not JSON, ignore quietly
+            def handle_response(response):
+                if response.status != 200:
+                    if DEBUG:
+                        print(f"Non-200 response: {response.status} {response.url}")
+                    return
 
-            if isinstance(data, dict) and is_usage_payload(data):
-                state["usage_widget_data"] = data
-                print("\nCaptured valid billing data")
+                try:
+                    data = response.json()
+                except Exception as e:
+                    if DEBUG:
+                        print(f"Non-JSON response from {response.url}: {e}")
+                    return
 
-                if DEBUG:
-                    print(f"\n=== RESPONSE MATCH ===\n{response.url}")
-                    print(json.dumps(data, indent=2)[:1000])
+                # Detect login failure responses from the API
+                if isinstance(data, dict):
+                    error_code = (
+                        data.get("errorCode")
+                        or data.get("error_code")
+                        or data.get("status") == "error"
+                    )
+                    if error_code:
+                        state["login_failed"] = True
+                        print(f"Login error detected in response: {error_code}")
+                        return
 
-        page.on("request", handle_request)
-        page.on("response", handle_response)
-        
-        print("Navigating to login page...")
-        page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)  
-        
-        # Fill credentials safely using locators
-        email_field = page.locator("scg-text-field input").nth(0)
-        email_field.wait_for(state="visible")
-        email_field.fill(SOCALGAS_EMAIL)
-        
-        password_field = page.locator("scg-text-field input").nth(1)
-        password_field.fill(SOCALGAS_PASSWORD)
-        
-        page.wait_for_timeout(500) # Give custom web components a moment to settle.
-        
-        print("Submitting login credentials...")
-        page.locator('scg-button[data-testid="login-button"]').click()
+                if isinstance(data, dict) and is_usage_payload(data):
+                    state["usage_widget_data"] = data
+                    print("Captured valid billing data")
 
-        # Wait loop with timeout boundary
-        print("Waiting for usage widget response...")
-        for _ in range(30):  # 30 seconds total max
-            if state["usage_widget_data"]:
-                break
-            page.wait_for_timeout(1000)
+                    if DEBUG:
+                        print(f"\n=== RESPONSE MATCH ===\n{response.url}")
+                        print(json.dumps(data, indent=2)[:1000])
 
-        browser.close()
+            page.on("request", handle_request)
+            page.on("response", handle_response)
 
-        if not state["usage_widget_data"]:
-            raise RuntimeError("Could not capture backend usage widget data.")
+            print("Navigating to login page...")
+            page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
 
-        return state["usage_widget_data"]
+            email_field = page.locator("scg-text-field input").nth(0)
+            email_field.wait_for(state="visible")
+            email_field.fill(SOCALGAS_EMAIL)
+
+            password_field = page.locator("scg-text-field input").nth(1)
+            password_field.fill(SOCALGAS_PASSWORD)
+
+            page.wait_for_timeout(500)
+
+            print("Submitting login credentials...")
+            page.locator('scg-button[data-testid="login-button"]').click()
+
+            print("Waiting for usage widget response...")
+            for _ in range(30):
+                if state["usage_widget_data"]:
+                    break
+                if state["login_failed"]:
+                    raise RuntimeError("Login failed — check credentials or captcha.")
+                if _ >= 5 and not state["login_verified"]:
+                    raise RuntimeError("No authenticated requests detected after 5s — login likely did not complete.")
+                page.wait_for_timeout(1000)
+
+            if not state["usage_widget_data"]:
+                raise RuntimeError("Login succeeded but usage data never arrived — possible page structure change.")
+
+            return state["usage_widget_data"]
 
 
 def to_float(value, field_name):

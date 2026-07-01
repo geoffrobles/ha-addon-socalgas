@@ -84,7 +84,14 @@ def login_and_get_usage():
 
             def handle_response(response):
                 if response.status != 200:
-                    if DEBUG:
+                    if "usagewidget" in response.url and response.status == 204:
+                        # Same cycle-boundary condition, different failure shape: instead of
+                        # 200 + empty-string field, the endpoint sometimes returns no body
+                        # at all. Tag it explicitly so it doesn't blend into routine
+                        # non-200 static-asset noise in the debug log.
+                        if DEBUG:
+                            print(f"204 on usagewidget — cycle rollover, no data yet: {response.url}")
+                    elif DEBUG:
                         print(f"Non-200 response: {response.status} {response.url}")
                     return
 
@@ -95,7 +102,6 @@ def login_and_get_usage():
                         print(f"Non-JSON response from {response.url}: {e}")
                     return
 
-                # Detect login failure responses from the API
                 if isinstance(data, dict):
                     error_code = (
                         data.get("errorCode")
@@ -114,6 +120,9 @@ def login_and_get_usage():
                     if DEBUG:
                         print(f"\n=== RESPONSE MATCH ===\n{response.url}")
                         print(json.dumps(data, indent=2)[:1000])
+
+
+                        
 
             page.on("request", handle_request)
             page.on("response", handle_response)
@@ -149,12 +158,18 @@ def login_and_get_usage():
             return state["usage_widget_data"]
 
 
+
+class IncompleteDataError(Exception):
+    """Raised when SoCalGas returns a cycle-boundary payload with the projection
+    not yet computed — distinct from a real schema/data failure."""
+    pass
+
+
 def to_float(value, field_name):
     try:
         return float(value)
     except (TypeError, ValueError) as e:
         raise RuntimeError(f"Expected numeric value for {field_name}, got {value!r}") from e
-
 
 
 def build_payload(usage_data):
@@ -163,16 +178,29 @@ def build_payload(usage_data):
     user_detail = verification.get("UserDetail", {}) if isinstance(verification, dict) else {}
     cost_data = user_detail.get("CostToDate", {}) if isinstance(user_detail, dict) else {}
     required_fields = [
-        "ProjThermsToDateQty", 
-        "ProjThermsQty", 
-        "ProjBillAmt", 
+        "ProjThermsToDateQty",
+        "ProjThermsQty",
+        "ProjBillAmt",
         "ProjCostToDateAmt",
         "ProjStartDate",
         "ProjEndDate",
-        ]
+    ]
     missing = [f for f in required_fields if f not in cost_data]
     if missing:
         raise RuntimeError(f"Schema drift detected — missing fields: {missing}")
+
+    # SoCalGas uses zero-padded strings ("000000000000") as placeholders for
+    # not-yet-computed fields — except ProjThermsToDateQty, which comes back
+    # as a true empty string during the ~1-day window between a cycle's
+    # ProjEndDate and the backend finalizing the next projection. Confirmed
+    # via authenticated browser HAR, not a scraper artifact. Treat this as
+    # "not ready" and bail before to_float ever sees it — don't let a
+    # legitimate-looking 0.0 get published into a state_class sensor.
+    if cost_data["ProjThermsToDateQty"] == "":
+        raise IncompleteDataError(
+            f"Cycle boundary (ProjEndDate={cost_data.get('ProjEndDate')}) — "
+            "ProjThermsToDateQty not yet computed upstream."
+        )
 
     return {
         "therms_to_date": to_float(cost_data["ProjThermsToDateQty"], "ProjThermsToDateQty"),
@@ -183,6 +211,11 @@ def build_payload(usage_data):
         "billing_cycle_end": cost_data["ProjEndDate"],
         "updated_at": datetime.now().astimezone().isoformat(),
     }
+
+
+
+
+
 
 def publish_mqtt(payload):
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -232,7 +265,7 @@ def main():
     if not SOCALGAS_EMAIL or not SOCALGAS_PASSWORD:
         print("Error: Missing SoCalGas credentials.")
         sys.exit(1)
-        
+
     if not MQTT_HOST:
         print("Error: MQTT_HOST is not configured.")
         sys.exit(1)
@@ -242,13 +275,17 @@ def main():
     try:
         usage_data = login_and_get_usage()
         payload = build_payload(usage_data)
-        
+
         if DEBUG:
             print("\n=== PAYLOAD TO SEND ===")
             print(json.dumps(payload, indent=2))
-            
+
         publish_mqtt(payload)
         print("Script executed successfully.")
+    except IncompleteDataError as e:
+        # Not a failure — skip publish, retained MQTT message holds last-known-good.
+        print(f"Skipping publish — {e}")
+        sys.exit(0)
     except Exception as e:
         print(f"Execution Failed: {e}", file=sys.stderr)
         sys.exit(1)

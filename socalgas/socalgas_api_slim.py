@@ -1,5 +1,5 @@
 import json
-import os
+import re
 import sys
 from datetime import datetime
 
@@ -172,6 +172,16 @@ def to_float(value, field_name):
         raise RuntimeError(f"Expected numeric value for {field_name}, got {value!r}") from e
 
 
+# SoCalGas placeholder for a not-yet-computed numeric field: a long run of
+# zero digits (e.g. "000000000000"). Length-gated so a genuine short "0"
+# reading isn't mistaken for the placeholder.
+PLACEHOLDER_PATTERN = re.compile(r"^0{8,}$")
+
+
+def is_placeholder_value(value):
+    return value == "" or (isinstance(value, str) and bool(PLACEHOLDER_PATTERN.match(value)))
+
+
 def build_payload(usage_data):
     # Safely walk through nested fields to prevent crashing on unforeseen schema shifts
     verification = usage_data.get("VerificationResponse", {})
@@ -190,16 +200,19 @@ def build_payload(usage_data):
         raise RuntimeError(f"Schema drift detected — missing fields: {missing}")
 
     # SoCalGas uses zero-padded strings ("000000000000") as placeholders for
-    # not-yet-computed fields — except ProjThermsToDateQty, which comes back
-    # as a true empty string during the ~1-day window between a cycle's
-    # ProjEndDate and the backend finalizing the next projection. Confirmed
-    # via authenticated browser HAR, not a scraper artifact. Treat this as
-    # "not ready" and bail before to_float ever sees it — don't let a
-    # legitimate-looking 0.0 get published into a state_class sensor.
-    if cost_data["ProjThermsToDateQty"] == "":
+    # not-yet-computed numeric fields — except ProjThermsToDateQty, which
+    # comes back as a true empty string — during the ~1-day window between a
+    # cycle's ProjEndDate and the backend finalizing the next projection.
+    # Confirmed via authenticated browser HAR, not a scraper artifact. Treat
+    # either shape as "not ready" and bail before to_float ever sees it —
+    # don't let a legitimate-looking 0.0 get published into a state_class
+    # sensor.
+    numeric_fields = ["ProjThermsToDateQty", "ProjThermsQty", "ProjBillAmt", "ProjCostToDateAmt"]
+    placeholder_fields = [f for f in numeric_fields if is_placeholder_value(cost_data[f])]
+    if placeholder_fields:
         raise IncompleteDataError(
             f"Cycle boundary (ProjEndDate={cost_data.get('ProjEndDate')}) — "
-            "ProjThermsToDateQty not yet computed upstream."
+            f"{', '.join(placeholder_fields)} not yet computed upstream."
         )
 
     return {

@@ -21,6 +21,7 @@ mqtt_port: 1883
 mqtt_user: "mqtt-user"
 mqtt_password: "your-mqtt-password"
 mqtt_topic: "home/socalgas/total"
+update_interval_hours: 6
 debug: false
 ```
 
@@ -29,6 +30,18 @@ Your SoCalGas account email.
 
 ### Option: `password`
 Your SoCalGas account password.
+
+### Option: `mqtt_topic`
+Topic the usage payload is published to (retained). Defaults to `home/socalgas/total`.
+
+### Option: `update_interval_hours`
+Hours between successful syncs, 1 to 24. Defaults to 6. A failed sync is
+retried after 5, 15 and 60 minutes before falling back to this schedule.
+
+### Option: `debug`
+Verbose logging. On failure, also saves a screenshot and the page text to
+`/share/socalgas/` (reachable via the Samba or File editor add-ons). These
+files can contain account details.
 
 ## Sensors
 

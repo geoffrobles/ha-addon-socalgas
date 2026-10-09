@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sys
 import time
@@ -27,17 +28,25 @@ MQTT_HOST = config.get("mqtt_host")
 MQTT_PORT = int(config.get("mqtt_port", 1883))
 MQTT_USER = config.get("mqtt_user", "")
 MQTT_PASSWORD = config.get("mqtt_password", "")
-MQTT_TOPIC = config.get("mqtt_topic", "home/socalgas/total")
+# `or` so an optional-but-blank schema value falls back to the default.
+MQTT_TOPIC = config.get("mqtt_topic") or "home/socalgas/total"
 
 LOGIN_URL = "https://myaccount.socalgas.com/ui/login"
 LOGIN_API_FRAGMENT = "/authentication/login"
 USAGE_URL_FRAGMENT = "usagewidget"
 DEBUG = config.get("debug", False)
+# Debug screenshots/page text. /share is reachable from HA (Samba, File editor);
+# locally they go in a gitignored folder.
+DUMP_DIR = "/share/socalgas" if os.path.isdir("/share") else "debug_dumps"
 
 # Seconds to wait after clicking login before deciding login never happened.
 LOGIN_GRACE_SECONDS = 15
 # Total seconds to wait for the usage widget payload.
 USAGE_WAIT_SECONDS = 45
+# Seconds a usagewidget 204 must stand (with no 200 payload) before we call it a rollover.
+USAGE_204_GRACE_SECONDS = 5
+# Consecutive seconds on an interstitial before giving up on dismissing it.
+INTERSTITIAL_MAX_SECONDS = 10
 
 # Buttons that dismiss a post-login interstitial without agreeing to anything.
 # Deliberately excludes "Continue"/"Accept"/"Agree" so we never consent to terms.
@@ -64,8 +73,17 @@ def is_usage_payload(data):
 
 
 def is_json_response(response):
-    ctype = response.headers.get("content-type", "")
-    return "application/json" in ctype
+    # Some gateways serve JSON as text/plain or omit the header; let
+    # response.json() decide for those rather than dropping the payload.
+    ctype = response.headers.get("content-type", "").lower()
+    return not ctype or "json" in ctype or ctype.startswith("text/plain")
+
+
+def is_post_login_url(url):
+    """True only for a real authenticated app page, not login, error, or a foreign/blank page."""
+    if not url.startswith("https://myaccount.socalgas.com/ui/"):
+        return False
+    return "/ui/login" not in url and "/ui/error" not in url
 
 
 def login_and_get_usage():
@@ -99,7 +117,7 @@ def login_and_get_usage():
                 "login_verified": False,
                 "login_failed": None,
                 "usage_widget_data": None,
-                "usage_empty": False,
+                "usage_empty_at": None,
             }
 
             def handle_request(request):
@@ -112,23 +130,29 @@ def login_and_get_usage():
                 url = response.url
 
                 if USAGE_URL_FRAGMENT in url.lower() and response.status == 204:
-                    # Cycle rollover: endpoint returns no body at all.
-                    state["usage_empty"] = True
-                    print(f"204 on usagewidget, cycle rollover, no data yet: {url}")
+                    # Possible cycle rollover (no body). Only acted on if no 200
+                    # payload follows within USAGE_204_GRACE_SECONDS.
+                    if state["usage_empty_at"] is None:
+                        state["usage_empty_at"] = time.monotonic()
+                    print(f"204 on usagewidget, possible cycle rollover: {url}")
                     return
 
-                if response.status in (401, 403) and LOGIN_API_FRAGMENT in url:
+                # Any 4xx/5xx from the login endpoint (bad creds, bot block, 429
+                # rate limit, outage) fails fast with the real status code.
+                if response.status >= 400 and LOGIN_API_FRAGMENT in url:
                     state["login_failed"] = f"HTTP {response.status} from login endpoint"
                     # Body/headers distinguish bad credentials from a WAF/bot block.
-                    try:
-                        body = response.text()[:500]
-                    except Exception as e:
-                        body = f"<unreadable: {e}>"
-                    headers = {
-                        k: v for k, v in response.headers.items()
-                        if k.lower() in ("server", "content-type", "x-akamai-request-id", "cf-ray", "x-cache")
-                    }
-                    print(f"Login endpoint {response.status}: headers={headers} body={body!r}")
+                    # Debug only: the body may echo account identifiers.
+                    if DEBUG:
+                        try:
+                            body = response.text()[:500]
+                        except Exception as e:
+                            body = f"<unreadable: {e}>"
+                        headers = {
+                            k: v for k, v in response.headers.items()
+                            if k.lower() in ("server", "content-type", "via", "cf-ray", "x-cache")
+                        }
+                        print(f"Login endpoint {response.status}: headers={headers} body={body!r}")
                     return
 
                 if response.status != 200:
@@ -181,34 +205,46 @@ def login_and_get_usage():
             page.locator('scg-button[data-testid="login-button"]').click()
 
             print("Waiting for usage widget response...")
-            interstitial_attempts = 0
-            for second in range(USAGE_WAIT_SECONDS):
+            # Wall-clock deadlines: interstitial clicks and locator calls make
+            # loop iterations take longer than 1s.
+            start = time.monotonic()
+            interstitial_since = None
+            while time.monotonic() - start < USAGE_WAIT_SECONDS:
                 if state["usage_widget_data"]:
                     break
-                if state["usage_empty"]:
-                    raise IncompleteDataError("usagewidget returned 204 (cycle rollover).")
                 if state["login_failed"]:
                     raise RuntimeError(f"Login failed: {state['login_failed']}")
+                empty_at = state["usage_empty_at"]
+                if empty_at is not None and time.monotonic() - empty_at >= USAGE_204_GRACE_SECONDS:
+                    raise IncompleteDataError("usagewidget returned 204 (cycle rollover).")
 
                 current_url = page.url
-                # Leaving /ui/login counts as a successful login even if the
-                # login API body couldn't be read before navigation.
-                if "/ui/login" not in current_url:
+                if "/ui/error" in current_url:
+                    dump_page(page, "login_error")
+                    raise RuntimeError(f"SoCalGas redirected to an error page after login: {current_url}")
+                # Reaching a real app page counts as a successful login even if
+                # the login API body couldn't be read before navigation.
+                if is_post_login_url(current_url):
                     state["login_verified"] = True
 
                 if "/interstitial" in current_url:
-                    interstitial_attempts += 1
-                    if interstitial_attempts == 1:
+                    if interstitial_since is None:
+                        interstitial_since = time.monotonic()
                         print(f"Landed on interstitial: {current_url}")
                         dump_page(page, "interstitial")
-                    if not try_dismiss_interstitial(page) and interstitial_attempts >= 8:
+                    try_dismiss_interstitial(page)
+                    # Judged on whether we actually left the page, not whether a
+                    # click happened: a "Close" on a banner can succeed forever.
+                    if "/interstitial" in page.url and time.monotonic() - interstitial_since >= INTERSTITIAL_MAX_SECONDS:
                         raise InterstitialBlockedError(
                             "Stuck on a SoCalGas interstitial page after login. "
                             "Log in once in a normal browser and clear the prompt "
-                            "(see interstitial.png / interstitial.txt if debug is on)."
+                            f"(with debug on, see interstitial.png / interstitial.txt in {DUMP_DIR})."
                         )
+                else:
+                    interstitial_since = None
 
-                if second >= LOGIN_GRACE_SECONDS and not state["login_verified"]:
+                if time.monotonic() - start >= LOGIN_GRACE_SECONDS and not state["login_verified"]:
                     dump_page(page, "login_stuck")
                     raise RuntimeError(
                         f"Still on login page after {LOGIN_GRACE_SECONDS}s, login likely did not complete."
@@ -229,20 +265,14 @@ def login_and_get_usage():
 def try_dismiss_interstitial(page):
     """Click a skip-style button if one exists. Returns True if something was clicked."""
     try:
-        button = page.get_by_role("button", name=INTERSTITIAL_SKIP).first
-        if button.count() and button.is_visible():
-            label = button.inner_text().strip()
-            button.click()
-            print(f"Dismissed interstitial via '{label}'")
-            page.wait_for_timeout(1500)
-            return True
-        link = page.get_by_role("link", name=INTERSTITIAL_SKIP).first
-        if link.count() and link.is_visible():
-            label = link.inner_text().strip()
-            link.click()
-            print(f"Dismissed interstitial via link '{label}'")
-            page.wait_for_timeout(1500)
-            return True
+        for role in ("button", "link"):
+            target = page.get_by_role(role, name=INTERSTITIAL_SKIP).first
+            if target.count() and target.is_visible():
+                label = target.inner_text().strip()
+                target.click()
+                print(f"Dismissed interstitial via {role} '{label}'")
+                page.wait_for_timeout(1500)
+                return True
     except Exception as e:
         if DEBUG:
             print(f"Interstitial dismiss attempt failed: {e}")
@@ -254,11 +284,13 @@ def dump_page(page, name):
     if not DEBUG:
         return
     try:
-        page.screenshot(path=f"{name}.png", full_page=True)
+        os.makedirs(DUMP_DIR, exist_ok=True)
+        base = os.path.join(DUMP_DIR, name)
+        page.screenshot(path=f"{base}.png", full_page=True)
         text = page.inner_text("body")
-        with open(f"{name}.txt", "w") as f:
+        with open(f"{base}.txt", "w") as f:
             f.write(f"URL: {page.url}\n\n{text}")
-        print(f"Saved {name}.png and {name}.txt")
+        print(f"Saved {base}.png and {base}.txt")
         print(f"--- page text (first 800 chars) ---\n{text[:800]}\n---")
     except Exception as e:
         print(f"Could not dump page: {e}")
@@ -272,17 +304,23 @@ def to_float(value, field_name):
 
 
 # SoCalGas placeholder for a not-yet-computed numeric field: a long run of
-# zero digits (e.g. "000000000000"). Length-gated so a genuine short "0"
+# zeros, optionally signed or with a decimal part (e.g. "000000000000",
+# "000000000.00"). Gated on zero count so a genuine short "0" or "0.00"
 # reading isn't mistaken for the placeholder.
-PLACEHOLDER_PATTERN = re.compile(r"^0{8,}$")
+PLACEHOLDER_PATTERN = re.compile(r"^[+-]?0*(\.0*)?$")
+PLACEHOLDER_MIN_ZEROS = 8
+
+
+def is_blank(value):
+    return value is None or (isinstance(value, str) and value.strip() == "")
 
 
 def is_placeholder_value(value):
-    if value is None:
+    if is_blank(value):
         return True
     if isinstance(value, str):
         v = value.strip()
-        return v == "" or bool(PLACEHOLDER_PATTERN.match(v))
+        return bool(PLACEHOLDER_PATTERN.match(v)) and v.count("0") >= PLACEHOLDER_MIN_ZEROS
     return False
 
 
@@ -304,11 +342,18 @@ def build_payload(usage_data):
         raise RuntimeError(f"Schema drift detected, missing fields: {missing}")
 
     # During the ~1-day window between a cycle's ProjEndDate and the backend
-    # finalizing the next projection, numeric fields come back as zero-padded
-    # placeholders (or "" for ProjThermsToDateQty) and dates can be blank.
-    # Bail before a fake 0.0 lands in a state_class sensor.
-    check_fields = required_fields
-    placeholder_fields = [f for f in check_fields if is_placeholder_value(cost_data[f])]
+    # finalizing the next projection, ProjThermsToDateQty comes back as "",
+    # dates can be blank, and projection fields are zero-padded placeholders.
+    # Bail before a fake 0.0 lands in a state_class sensor. To-date amounts
+    # are only rejected when blank: a zero-padded cost-to-date alongside a
+    # real therms-to-date is a genuine zero (e.g. day 1 of a cycle).
+    blank_fields = [
+        f for f in ("ProjThermsToDateQty", "ProjCostToDateAmt", "ProjStartDate", "ProjEndDate")
+        if is_blank(cost_data[f])
+    ]
+    placeholder_fields = blank_fields + [
+        f for f in ("ProjThermsQty", "ProjBillAmt") if is_placeholder_value(cost_data[f])
+    ]
     if placeholder_fields:
         raise IncompleteDataError(
             f"Cycle boundary (ProjEndDate={cost_data.get('ProjEndDate')!r}), "

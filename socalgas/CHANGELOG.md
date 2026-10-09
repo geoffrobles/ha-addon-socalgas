@@ -1,3 +1,42 @@
+## 1.4
+- Retry a failed sync after 5, 15 and 60 minutes instead of waiting for
+the next scheduled run
+- New `update_interval_hours` option (1-24, default 6)
+- `mqtt_topic` is now configurable from the add-on options
+- Debug screenshots and page text saved to /share/socalgas/ so they can
+be retrieved (previously written inside the container)
+- Docker image installs pinned versions from requirements.txt; removed
+unused python-dotenv and requests
+- fix: login detection
+    - Any 4xx/5xx from the login endpoint (e.g. 429 rate limit) fails
+    fast with its status code instead of a generic timeout
+    - Only a real myaccount.socalgas.com app page counts as logged in;
+    a redirect to /ui/error fails immediately
+    - Login response body is only logged with debug on
+- fix: cycle-boundary handling
+    - A usagewidget 204 is only treated as a rollover if no real payload
+    arrives within 5s, instead of skipping the run immediately
+    - A zero-padded cost-to-date alongside a valid therms-to-date is
+    published as a real 0 instead of skipping every run
+    - Zero-padded placeholders with a decimal point or sign (e.g.
+    "000000000.00") are now detected instead of published as 0.0
+- fix: JSON served as text/plain or without a content-type is parsed again
+- fix: exit code 2 when stuck on an interstitial is now based on whether
+the page was actually left, not whether a click succeeded
+- Wait timeouts measured in real time, so 15s/45s limits are accurate
+
+## 1.3
+- fix: login rejected with HTTP 403 by SoCalGas bot defense
+    - Launch Chromium in new headless mode (channel="chromium") and strip
+    "HeadlessChrome" from the user agent; the headless shell advertised
+    itself via sec-ch-ua
+- Dismiss post-login interstitials (e.g. 2FA prompt) via skip-style
+buttons only; exit code 2 if stuck on one
+- Treat cycle-boundary payloads (blank fields, zero-padded placeholders,
+usagewidget 204) as "not ready" and skip publishing instead of sending 0.0
+- Wait for MQTT CONNACK so broker auth failures are reported as such
+- Mask email in debug config output
+
 ## 1.1.0
 - fix: validate usage payload by schema, not URL/key heuristics
     - Replace URL substring matching + "UsageSoFar" key check with

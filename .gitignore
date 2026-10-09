@@ -47,3 +47,6 @@ htmlcov/
 # Misc
 *.swp
 *.swo
+
+# Debug page dumps (may contain account details)
+debug_dumps/

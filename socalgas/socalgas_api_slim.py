@@ -42,7 +42,9 @@ DUMP_DIR = "/share/socalgas" if os.path.isdir("/share") else "debug_dumps"
 # Seconds to wait after clicking login before deciding login never happened.
 LOGIN_GRACE_SECONDS = 15
 # Total seconds to wait for the usage widget payload.
-USAGE_WAIT_SECONDS = 45
+USAGE_WAIT_SECONDS = 90
+# Seconds to wait for the login form to render.
+LOGIN_FORM_WAIT_SECONDS = 60
 # Seconds a usagewidget 204 must stand (with no 200 payload) before we call it a rollover.
 USAGE_204_GRACE_SECONDS = 5
 # Consecutive seconds on an interstitial before giving up on dismissing it.
@@ -51,6 +53,26 @@ INTERSTITIAL_MAX_SECONDS = 10
 # Buttons that dismiss a post-login interstitial without agreeing to anything.
 # Deliberately excludes "Continue"/"Accept"/"Agree" so we never consent to terms.
 INTERSTITIAL_SKIP = re.compile(r"^\s*(skip|not now|remind me later|maybe later|no thanks|close)\s*$", re.I)
+
+# Third-party analytics/survey hosts the page doesn't need. Aborted up front so
+# a slow or blackholed tracker can't stall rendering on low-powered add-on
+# hosts. First-party socalgas.com scripts, including bot defense, are never
+# blocked. split.io must NOT be listed: the site's feature flags come from
+# sdk.split.io, and without them the usage widget never loads.
+BLOCKED_HOSTS = re.compile(
+    r"^https?://([^/]*\.)?(clarity\.ms|medallia\.com|kampyle\.com|"
+    r"google-analytics\.com|googletagmanager\.com|doubleclick\.net|facebook\.(net|com)|"
+    r"dataplane\.rum\.[^/]*\.amazonaws\.com)(:\d+)?/"
+)
+# Hosts worth tracing in debug output when diagnosing a missing usage payload.
+TRACE_HOSTS = ("socalgas.com", "smartcmobile.com", "split.io")
+# Feature-flag service the usage widget depends on (see BLOCKED_HOSTS).
+FEATURE_FLAG_HOST = "sdk.split.io"
+FEATURE_FLAG_HINT = (
+    f" The site's feature-flag service ({FEATURE_FLAG_HOST}) never responded, and the usage "
+    "widget won't load without it. If you run a DNS ad-blocker (AdGuard Home, Pi-hole), "
+    "allowlist split.io for the Home Assistant host."
+)
 
 
 class IncompleteDataError(Exception):
@@ -112,13 +134,19 @@ def login_and_get_usage():
             )
             page = context.new_page()
             Stealth().apply_stealth_sync(page)
+            context.route(BLOCKED_HOSTS, lambda route: route.abort())
+            t0 = time.monotonic()
 
             state = {
                 "login_verified": False,
                 "login_failed": None,
                 "usage_widget_data": None,
                 "usage_empty_at": None,
+                "feature_flags_ok": False,
             }
+
+            def flag_hint():
+                return "" if state["feature_flags_ok"] else FEATURE_FLAG_HINT
 
             def handle_request(request):
                 if "accesstoken" in (k.lower() for k in request.headers.keys()):
@@ -128,6 +156,9 @@ def login_and_get_usage():
 
             def handle_response(response):
                 url = response.url
+
+                if FEATURE_FLAG_HOST in url and response.status < 400:
+                    state["feature_flags_ok"] = True
 
                 if USAGE_URL_FRAGMENT in url.lower() and response.status == 204:
                     # Possible cycle rollover (no body). Only acted on if no 200
@@ -192,11 +223,33 @@ def login_and_get_usage():
             page.on("request", handle_request)
             page.on("response", handle_response)
 
+            if DEBUG:
+                # Timeline of the requests that matter, to show where a run stalls.
+                def trace(msg):
+                    print(f"[{time.monotonic() - t0:5.1f}s] {msg}")
+
+                page.on("framenavigated", lambda f: f == page.main_frame and trace(f"NAV {f.url}"))
+                page.on("request", lambda r: USAGE_URL_FRAGMENT in r.url.lower() and trace(f"REQ {r.method} {r.url}"))
+                page.on("response", lambda r: USAGE_URL_FRAGMENT in r.url.lower() and trace(f"RESP {r.status} {r.url}"))
+                page.on(
+                    "requestfailed",
+                    lambda r: any(h in r.url for h in TRACE_HOSTS)
+                    and not r.url.endswith(".json")
+                    and trace(f"FAILED {r.failure} {r.url}"),
+                )
+
             print("Navigating to login page...")
             page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
 
             email_field = page.locator("scg-text-field input").nth(0)
-            email_field.wait_for(state="visible")
+            try:
+                email_field.wait_for(state="visible", timeout=LOGIN_FORM_WAIT_SECONDS * 1000)
+            except Exception:
+                dump_page(page, "login_form_missing")
+                raise RuntimeError(
+                    f"Login form did not appear within {LOGIN_FORM_WAIT_SECONDS}s (URL: {page.url})."
+                    + flag_hint()
+                )
             email_field.fill(SOCALGAS_EMAIL)
             page.locator("scg-text-field input").nth(1).fill(SOCALGAS_PASSWORD)
             page.wait_for_timeout(500)
@@ -255,8 +308,8 @@ def login_and_get_usage():
             if not state["usage_widget_data"]:
                 dump_page(page, "no_usage")
                 raise RuntimeError(
-                    f"Logged in but usage data never arrived (last URL: {page.url}). "
-                    "Possible page structure change."
+                    f"Logged in but usage data never arrived (last URL: {page.url})."
+                    + (flag_hint() or " Possible page structure change.")
                 )
 
             return state["usage_widget_data"]
@@ -286,12 +339,14 @@ def dump_page(page, name):
     try:
         os.makedirs(DUMP_DIR, exist_ok=True)
         base = os.path.join(DUMP_DIR, name)
-        page.screenshot(path=f"{base}.png", full_page=True)
-        text = page.inner_text("body")
+        # Text first: it survives even if the screenshot below hangs.
+        text = page.inner_text("body", timeout=10000)
         with open(f"{base}.txt", "w") as f:
             f.write(f"URL: {page.url}\n\n{text}")
-        print(f"Saved {base}.png and {base}.txt")
+        print(f"Saved {base}.txt")
         print(f"--- page text (first 800 chars) ---\n{text[:800]}\n---")
+        page.screenshot(path=f"{base}.png", full_page=True, timeout=10000)
+        print(f"Saved {base}.png")
     except Exception as e:
         print(f"Could not dump page: {e}")
 

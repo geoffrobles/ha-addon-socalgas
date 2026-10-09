@@ -1,3 +1,20 @@
+## 1.5
+- fix: "Logged in but usage data never arrived" on some networks
+    - The usage widget only loads after the site fetches feature flags
+    from sdk.split.io. When that is blocked (e.g. by AdGuard Home or
+    Pi-hole), the error now says so and asks to allow split.io, instead
+    of reporting a page structure change
+- Block third-party analytics/survey scripts (Clarity, Medallia, Google
+Tag Manager, AWS RUM) to reduce page load on low-powered hosts
+- Longer waits for slow hosts: 90s for usage data (was 45s), 60s for the
+login form (was 30s)
+- Debug improvements
+    - Request timeline for the usage widget and failed requests to
+    socalgas.com, smartcmobile.com and split.io
+    - Page text is saved before the screenshot, and screenshots time out
+    after 10s instead of hanging for 30s
+    - A login form that never appears is now dumped too
+
 ## 1.4
 - Retry a failed sync after 5, 15 and 60 minutes instead of waiting for
 the next scheduled run

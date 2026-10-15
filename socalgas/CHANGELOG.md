@@ -1,3 +1,6 @@
+## 1.5.1
+- fix: Simplified
+
 ## 1.5
 - fix: "Logged in but usage data never arrived" on some networks
     - The usage widget only loads after the site fetches feature flags

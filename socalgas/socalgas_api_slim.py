@@ -241,7 +241,7 @@ def login_and_get_usage():
             print("Navigating to login page...")
             page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
 
-            email_field = page.locator("scg-text-field input").nth(0)
+            email_field = page.locator('scg-text-field[name="email"] input')
             try:
                 email_field.wait_for(state="visible", timeout=LOGIN_FORM_WAIT_SECONDS * 1000)
             except Exception:
@@ -251,11 +251,20 @@ def login_and_get_usage():
                     + flag_hint()
                 )
             email_field.fill(SOCALGAS_EMAIL)
-            page.locator("scg-text-field input").nth(1).fill(SOCALGAS_PASSWORD)
-            page.wait_for_timeout(500)
+            page.locator('scg-text-field[name="password"] input').fill(SOCALGAS_PASSWORD)
 
             print("Submitting login credentials...")
-            page.locator('scg-button[data-testid="login-button"]').click()
+            # The button stays aria-disabled until the form validates.
+            login_button = page.locator('scg-button[data-testid="login-button"]')
+            try:
+                page.wait_for_selector(
+                    'scg-button[data-testid="login-button"]:not([aria-disabled="true"])',
+                    timeout=5000,
+                )
+            except Exception:
+                if DEBUG:
+                    print("Login button still aria-disabled after 5s, clicking anyway")
+            login_button.click()
 
             print("Waiting for usage widget response...")
             # Wall-clock deadlines: interstitial clicks and locator calls make

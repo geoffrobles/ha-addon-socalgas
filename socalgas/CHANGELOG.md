@@ -1,3 +1,7 @@
+## 1.6
+- Improved retry logic
+
+
 ## 1.5.1
 - fix: Simplified
 

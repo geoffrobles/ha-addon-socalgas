@@ -49,6 +49,9 @@ LOGIN_FORM_WAIT_SECONDS = 60
 USAGE_204_GRACE_SECONDS = 5
 # Consecutive seconds on an interstitial before giving up on dismissing it.
 INTERSTITIAL_MAX_SECONDS = 10
+# Seconds to wait before each retry when the login host's DNS name can't be
+# resolved (e.g. DNS not up yet after a host reboot).
+DNS_RETRY_DELAYS = (5, 15, 30, 60)
 
 # Buttons that dismiss a post-login interstitial without agreeing to anything.
 # Deliberately excludes "Continue"/"Accept"/"Agree" so we never consent to terms.
@@ -239,7 +242,15 @@ def login_and_get_usage():
                 )
 
             print("Navigating to login page...")
-            page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
+            for delay in (*DNS_RETRY_DELAYS, None):
+                try:
+                    page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
+                    break
+                except Exception as e:
+                    if delay is None or "ERR_NAME_NOT_RESOLVED" not in str(e):
+                        raise
+                    print(f"Could not resolve {LOGIN_URL}, retrying in {delay}s...")
+                    time.sleep(delay)
 
             email_field = page.locator('scg-text-field[name="email"] input')
             try:
